@@ -1,0 +1,28 @@
+### Health
+GET http://localhost:8080/health
+
+### Database Readiness
+GET http://localhost:8080/ready
+
+### Register Source Connection
+POST http://localhost:8080/api/v1/connections
+Content-Type: application/json
+
+{
+    "name": "Source MySQL",
+    "db_type": "mysql",
+    "host": "localhost",
+    "port": 3306,
+    "database": "source_db",
+    "username": "migration_user",
+    "password": "source_password_123"
+}
+
+### List Connections
+GET http://localhost:8080/api/v1/connections
+
+### Get Connection
+GET http://localhost:8080/api/v1/connections/1
+
+### Delete Connection
+DELETE http://localhost:8080/api/v1/connections/1

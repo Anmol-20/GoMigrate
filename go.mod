@@ -3,6 +3,7 @@ module github.com/Anmol-20/gomigrate
 go 1.27.4
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/go-sql-driver/mysql v1.10.2
 	github.com/joho/godotenv v1.5.1
 )

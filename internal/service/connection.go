@@ -2,16 +2,20 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net"
 	"strings"
 
 	"github.com/Anmol-20/gomigrate/internal/connection"
+	"github.com/Anmol-20/gomigrate/internal/mysqlclient"
 	"github.com/Anmol-20/gomigrate/internal/security"
 )
 
 var ErrInvalidInput = errors.New("invalid input")
+var ErrConnectionFailed = errors.New("mysql connection failed")
+var ErrSchemaDiscoveryFailed = errors.New("schema discovery failed")
 
 type ConnectionRepository interface {
 	Create(
@@ -215,4 +219,146 @@ func (s *ConnectionService) Delete(
 	return s.repo.Delete(ctx, id)
 }
 
-// Ensure the MySQL repository error is accessible to callers.
+func (s *ConnectionService) TestConnection(
+	ctx context.Context,
+	id int64,
+) error {
+
+	if id <= 0 {
+		return fmt.Errorf("%w: invalid ID", ErrInvalidInput)
+	}
+
+	// Step 1: Retrieve saved connection details.
+	conn, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	// Step 2: Decrypt the stored password.
+	password, err := s.encryptor.Decrypt(
+		conn.PasswordCiphertext,
+	)
+	if err != nil {
+		return fmt.Errorf("decrypt connection password: %w", err)
+	}
+
+	// Step 3: Establish an external MySQL connection.
+	db, err := mysqlclient.Open(ctx, mysqlclient.Config{
+		Host:     conn.Host,
+		Port:     conn.Port,
+		Database: conn.DatabaseName,
+		Username: conn.Username,
+		Password: password,
+	})
+
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+
+	// Step 4: Close the temporary connection.
+	defer db.Close()
+
+	return nil
+}
+
+func (s *ConnectionService) DiscoverSchema(
+	ctx context.Context,
+	id int64,
+) (*mysqlclient.Schema, error) {
+
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: invalid ID", ErrInvalidInput)
+	}
+
+	// Step 1: Retrieve connection configuration.
+	conn, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 2: Decrypt saved password.
+	password, err := s.encryptor.Decrypt(
+		conn.PasswordCiphertext,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt connection password: %w", err)
+	}
+
+	// Step 3: Connect to external MySQL.
+	db, err := mysqlclient.Open(ctx, mysqlclient.Config{
+		Host:     conn.Host,
+		Port:     conn.Port,
+		Database: conn.DatabaseName,
+		Username: conn.Username,
+		Password: password,
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrConnectionFailed, err)
+	}
+	defer db.Close()
+
+	// Step 4: Discover database schema.
+	schema, err := mysqlclient.DiscoverSchema(ctx, db)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrSchemaDiscoveryFailed, err)
+	}
+
+	// Step 5: Include the database name in the response.
+	schema.Database = conn.DatabaseName
+
+	return schema, nil
+}
+
+// ExecutionDatabaseName is the only database the migration executor may modify.
+const ExecutionDatabaseName = "gomigrate_execution_test"
+
+// OpenValidationDatabase reuses the saved target server credentials but overrides
+// the selected schema with the dedicated execution test database.
+// The caller must close the returned handle.
+func (s *ConnectionService) OpenValidationDatabase(
+	ctx context.Context,
+	targetConnectionID int64,
+) (*sql.DB, error) {
+	if targetConnectionID <= 0 {
+		return nil, fmt.Errorf("%w: invalid target connection ID", ErrInvalidInput)
+	}
+
+	conn, err := s.repo.GetByID(ctx, targetConnectionID)
+	if err != nil {
+		return nil, err
+	}
+
+	password, err := s.encryptor.Decrypt(conn.PasswordCiphertext)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt saved target password: %w", err)
+	}
+
+	db, err := mysqlclient.Open(ctx, mysqlclient.Config{
+		Host:     conn.Host,
+		Port:     conn.Port,
+		Database: ExecutionDatabaseName,
+		Username: conn.Username,
+		Password: password,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("open execution test database: %w", err)
+	}
+
+	var selected string
+	if err := db.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&selected); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("verify selected execution database: %w", err)
+	}
+
+	if selected != ExecutionDatabaseName {
+		db.Close()
+		return nil, fmt.Errorf(
+			"refusing to execute: selected database %q is not %q",
+			selected,
+			ExecutionDatabaseName,
+		)
+	}
+
+	return db, nil
+}

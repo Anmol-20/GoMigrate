@@ -94,11 +94,52 @@ func main() {
 		connectionService,
 	)
 
+	schemaComparisonService := service.NewSchemaComparisonService(
+		connectionService,
+	)
+
+	schemaComparisonHandler := handler.NewSchemaComparisonHandler(
+		schemaComparisonService,
+	)
+	migrationPlanRepo := repository.NewMySQLMigrationPlanRepository(db)
+	migrationPlanService := service.NewMigrationPlanService(
+		connectionService,
+		migrationPlanRepo,
+	)
+
+	migrationPlanHandler := handler.NewMigrationPlanHandler(
+		migrationPlanService,
+	)
+	migrationExecutionRepo := repository.NewMySQLMigrationExecutionRepository(db)
+	migrationExecutionService := service.NewMigrationExecutionService(
+		migrationPlanRepo, migrationExecutionRepo, connectionService,
+	)
+	migrationExecutionHandler := handler.NewMigrationExecutionHandler(migrationExecutionService)
+
 	// HTTP router.
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", healthHandler)
 	mux.HandleFunc("GET /ready", readinessHandler(db))
+
+	mux.HandleFunc(
+		"POST /api/v1/schema/compare",
+		schemaComparisonHandler.Compare,
+	)
+
+	mux.HandleFunc(
+		"POST /api/v1/migration-plans",
+		migrationPlanHandler.Generate,
+	)
+	mux.HandleFunc("POST /api/v1/migration-plans/{id}/execute", migrationExecutionHandler.Execute)
+	mux.HandleFunc("GET /api/v1/migration-executions/{id}", migrationExecutionHandler.GetByID)
+	mux.HandleFunc("GET /api/v1/migration-executions/{id}/reconcile", migrationExecutionHandler.Reconcile)
+	mux.HandleFunc("GET /api/v1/migration-executions/stale", migrationExecutionHandler.ListStale)
+
+	mux.HandleFunc(
+		"POST /api/v1/connections/{id}/test",
+		connectionHandler.TestConnection,
+	)
 
 	mux.HandleFunc(
 		"POST /api/v1/connections",
@@ -118,6 +159,11 @@ func main() {
 	mux.HandleFunc(
 		"DELETE /api/v1/connections/{id}",
 		connectionHandler.Delete,
+	)
+
+	mux.HandleFunc(
+		"GET /api/v1/connections/{id}/schema",
+		connectionHandler.DiscoverSchema,
 	)
 
 	server := &http.Server{

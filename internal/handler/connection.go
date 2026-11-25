@@ -245,3 +245,164 @@ func (h *ConnectionHandler) Delete(
 		},
 	)
 }
+
+func (h *ConnectionHandler) TestConnection(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+
+	// Step 1: Parse connection ID.
+	id, err := strconv.ParseInt(
+		r.PathValue("id"),
+		10,
+		64,
+	)
+
+	if err != nil || id <= 0 {
+		writeError(
+			w,
+			http.StatusBadRequest,
+			"Invalid connection ID",
+		)
+		return
+	}
+
+	// Step 2: Test external MySQL connectivity.
+	err = h.service.TestConnection(
+		r.Context(),
+		id,
+	)
+
+	if err != nil {
+
+		// Connection record does not exist.
+		if errors.Is(err, connection.ErrNotFound) {
+			writeError(
+				w,
+				http.StatusNotFound,
+				"Connection not found",
+			)
+			return
+		}
+
+		// Invalid input.
+		if errors.Is(err, service.ErrInvalidInput) {
+			writeError(
+				w,
+				http.StatusBadRequest,
+				"Invalid connection ID",
+			)
+			return
+		}
+
+		// External MySQL connection failure.
+		if errors.Is(err, service.ErrConnectionFailed) {
+			writeJSON(
+				w,
+				http.StatusBadGateway,
+				map[string]any{
+					"connection_id": id,
+					"status":        "FAILED",
+					"message":       "Unable to establish MySQL connection",
+				},
+			)
+			return
+		}
+
+		// Unexpected internal error.
+		writeError(
+			w,
+			http.StatusInternalServerError,
+			"Internal error while testing connection",
+		)
+		return
+	}
+
+	// Step 3: Return success.
+	writeJSON(
+		w,
+		http.StatusOK,
+		map[string]any{
+			"connection_id": id,
+			"status":        "SUCCESS",
+			"message":       "MySQL connection established successfully",
+		},
+	)
+}
+
+func (h *ConnectionHandler) DiscoverSchema(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+
+	// Step 1: Parse connection ID.
+	id, err := strconv.ParseInt(
+		r.PathValue("id"),
+		10,
+		64,
+	)
+
+	if err != nil || id <= 0 {
+		writeError(
+			w,
+			http.StatusBadRequest,
+			"Invalid connection ID",
+		)
+		return
+	}
+
+	// Step 2: Retrieve schema.
+	schema, err := h.service.DiscoverSchema(
+		r.Context(),
+		id,
+	)
+
+	if err != nil {
+
+		if errors.Is(err, connection.ErrNotFound) {
+			writeError(
+				w,
+				http.StatusNotFound,
+				"Connection not found",
+			)
+			return
+		}
+
+		if errors.Is(err, service.ErrInvalidInput) {
+			writeError(
+				w,
+				http.StatusBadRequest,
+				"Invalid connection ID",
+			)
+			return
+		}
+
+		if errors.Is(err, service.ErrConnectionFailed) ||
+			errors.Is(err, service.ErrSchemaDiscoveryFailed) {
+
+			writeError(
+				w,
+				http.StatusBadGateway,
+				"Unable to discover database schema",
+			)
+			return
+		}
+
+		writeError(
+			w,
+			http.StatusInternalServerError,
+			"Internal error during schema discovery",
+		)
+		return
+	}
+
+	// Step 3: Return discovered schema.
+	writeJSON(
+		w,
+		http.StatusOK,
+		map[string]any{
+			"connection_id": id,
+			"schema":        schema,
+		},
+	)
+}
